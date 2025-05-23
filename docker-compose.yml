@@ -15,6 +15,7 @@ services:
       context: ./deliveroo-backend
       dockerfile: Dockerfile
       target: ${NODE_ENV:-development}
+    container_name: deliveroo_backend
     environment:
       - NODE_APP_PORT=3000
       - NODE_ENV=${NODE_ENV:-development}
@@ -59,6 +60,7 @@ services:
       context: ./deliveroo-frontend
       dockerfile: Dockerfile
       target: ${NODE_ENV:-development}
+    container_name: deliveroo_frontend
     environment:
       - API_URL=${API_URL:-http://localhost:3000}
     ports:
@@ -79,7 +81,7 @@ services:
 
   postgres-app:
     image: postgres:17-alpine
-    container_name: postgres
+    container_name: deliveroo_postgres
     environment:
       POSTGRES_USER: ${POSTGRES_DELIVEROO_USER}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
@@ -91,7 +93,7 @@ services:
       - '5432:5432'
     networks:
       - app-network
-      - management
+      - management-network
       - o11y-network
     secrets:
       - postgres_password
@@ -102,7 +104,7 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:9
-    container_name: pgadmin
+    container_name: deliveroo_pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
       PGADMIN_DEFAULT_PASSWORD_FILE: /run/secrets/pgadmin_password
@@ -114,7 +116,7 @@ services:
     depends_on:
       - postgres-app
     networks:
-      - management
+      - management-network
     secrets:
       - pgadmin_password
     restart: unless-stopped
@@ -125,7 +127,7 @@ services:
   # Redis Cache Service
   redis:
     image: redis:8-alpine
-    container_name: redis
+    container_name: deliveroo_redis
     entrypoint: ['/redis-entrypoint.sh']
     ports:
       - '6379:6379'
@@ -144,7 +146,7 @@ services:
   # RedisInsight GUI for Redis
   redisinsight:
     image: redis/redisinsight:2.68
-    container_name: redisinsight
+    container_name: deliveroo_redisinsight
     environment:
       - RI_REDIS_HOST=redis
       - RI_REDIS_PORT=6379
@@ -165,7 +167,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.0.0
-    container_name: grafana-container
+    container_name: deliveroo_grafana
     environment:
       - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_password
       - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
@@ -182,7 +184,7 @@ services:
 
   loki:
     image: grafana/loki:3.5.0
-    container_name: loki
+    container_name: deliveroo_loki
     volumes:
       - ./loki/loki-config.yaml:/etc/loki/local-config.yaml
       - loki-data:/loki
@@ -194,7 +196,7 @@ services:
     restart: unless-stopped
 
 networks:
-  management:
+  management-network:
     driver: bridge
   app-network:
     driver: bridge

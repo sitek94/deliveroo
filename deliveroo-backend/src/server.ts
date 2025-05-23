@@ -7,6 +7,7 @@ import redisClient from './redis'
 import {getAllEmployees, getAllVehiclesWithDriver} from './queries'
 import {mapVehicleRowsToDTOs} from './vehicle.model'
 import logger from './logger'
+import {dashboardRouter} from './dashboard/dashboard.routes'
 
 const app = express()
 const port = process.env.NODE_APP_PORT
@@ -87,6 +88,8 @@ app.get('/employees', async (req: Request, res: Response): Promise<void> => {
 app.get('/', (req: Request, res: Response): void => {
   res.json({status: 'Deliveroo backend is running!', timestamp: new Date()})
 })
+
+app.use('/dashboard', dashboardRouter)
 
 // Graceful shutdown
 process.on('SIGINT', async () => {

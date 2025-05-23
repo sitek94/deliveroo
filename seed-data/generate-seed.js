@@ -2,11 +2,13 @@
 const {faker} = require('@faker-js/faker')
 const fs = require('fs')
 const path = require('path')
+const {startOfMonth, endOfMonth, subMonths} = require('date-fns')
 
 // --- CONFIGURATION ---
 const config = {
   numVehicles: parseInt(process.argv[2], 10) || 100,
   numEmployees: parseInt(process.argv[3], 10) || 200,
+  numDeliveries: parseInt(process.argv[4], 10) || 500,
   // Probability that an employee has at least one vehicle assigned
   employeeHasVehicleProb: 0.7,
   // Probability that a vehicle is assigned to at least one employee
@@ -15,6 +17,7 @@ const config = {
   maxVehiclesPerEmployee: 3,
   // Max number of employees per vehicle
   maxEmployeesPerVehicle: 4,
+
   // Output file
   outputFile: path.join(__dirname, 'output', `seed-${Date.now()}.sql`),
 }
@@ -24,6 +27,7 @@ const employeeRoles = ['driver', 'dispatcher', 'manager']
 const employeeStatuses = ['active', 'on leave', 'inactive']
 const vehicleTypes = ['truck', 'van', 'car']
 const vehicleStatuses = ['available', 'on delivery', 'maintenance', 'offline']
+const deliveryStatuses = ['pending', 'active', 'completed', 'cancelled']
 
 // --- SQL SCHEMA (copied from init.sql, no changes) ---
 const schemaSQL = `
@@ -31,16 +35,19 @@ const schemaSQL = `
 DROP TABLE IF EXISTS vehicle_employee CASCADE;
 DROP TABLE IF EXISTS vehicles CASCADE;
 DROP TABLE IF EXISTS employees CASCADE;
+DROP TABLE IF EXISTS deliveries CASCADE;
 DROP TYPE IF EXISTS employee_role;
 DROP TYPE IF EXISTS employee_status;
 DROP TYPE IF EXISTS vehicle_type;
 DROP TYPE IF EXISTS vehicle_status;
+DROP TYPE IF EXISTS delivery_status;
 
 -- Create custom enum types
 CREATE TYPE employee_role AS ENUM ('driver', 'dispatcher', 'manager');
 CREATE TYPE employee_status AS ENUM ('active', 'on leave', 'inactive');
 CREATE TYPE vehicle_type AS ENUM ('truck', 'van', 'car');
 CREATE TYPE vehicle_status AS ENUM ('available', 'on delivery', 'maintenance', 'offline');
+CREATE TYPE delivery_status AS ENUM ('pending', 'active', 'completed', 'cancelled');
 
 -- Employee table (no reference to current_vehicle)
 CREATE TABLE employees (
@@ -71,6 +78,20 @@ CREATE TABLE vehicle_employee (
     is_primary BOOLEAN DEFAULT FALSE,
     last_inspection_date DATE,
     PRIMARY KEY (vehicle_id, employee_id, since_date)
+);
+
+-- Deliveries table (New table)
+CREATE TABLE deliveries (
+    id SERIAL PRIMARY KEY,
+    vehicle_id INT REFERENCES vehicles(id) ON DELETE SET NULL,
+    driver_id INT REFERENCES employees(id) ON DELETE SET NULL,
+    status delivery_status NOT NULL DEFAULT 'pending',
+    scheduled_delivery_time TIMESTAMPTZ,
+    actual_pickup_time TIMESTAMPTZ,
+    actual_delivery_time TIMESTAMPTZ,
+    delivery_distance_miles NUMERIC(8, 2),
+    fuel_consumed_gallons NUMERIC(6, 2),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 `
 
@@ -133,6 +154,237 @@ function generateVehicles(n) {
     })
   }
   return vehicles
+}
+
+// Helper function to get date ranges for current and previous month
+function getMonthDateRanges() {
+  const now = new Date()
+  const startOfCurrentMonth = startOfMonth(now)
+  const endOfCurrentMonth = endOfMonth(now)
+  const prevMonthDate = subMonths(now, 1)
+  const startOfPreviousMonth = startOfMonth(prevMonthDate)
+  const endOfPreviousMonth = endOfMonth(prevMonthDate)
+
+  return {
+    currentMonth: {start: startOfCurrentMonth, end: now, fullEnd: endOfCurrentMonth},
+    previousMonth: {
+      start: startOfPreviousMonth,
+      end: endOfPreviousMonth,
+      fullEnd: endOfPreviousMonth,
+    },
+  }
+}
+
+// Generate deliveries
+function generateDeliveries(numDeliveries, vehicles, employees, dateRanges) {
+  const deliveries = []
+  const drivers = employees.filter(emp => emp.role === 'driver')
+  if (drivers.length === 0) {
+    console.warn('No drivers available to assign to deliveries. Skipping delivery generation.')
+    return []
+  }
+  if (vehicles.length === 0) {
+    console.warn('No vehicles available to assign to deliveries. Skipping delivery generation.')
+    return []
+  }
+
+  const {previousMonth, currentMonth} = dateRanges
+
+  const numPrevMonthDeliveries = Math.floor(numDeliveries / 2)
+  const numCurrMonthDeliveries = numDeliveries - numPrevMonthDeliveries
+
+  let deliveryIdCounter = 1
+
+  const createDeliverySet = (count, monthRange, isCurrentMonth) => {
+    for (let i = 0; i < count; i++) {
+      const vehicle = randomEnum(vehicles)
+      const driver = randomEnum(drivers)
+      const status = randomEnum(deliveryStatuses)
+
+      const createdAt = faker.date.between({from: monthRange.start, to: monthRange.end})
+
+      let scheduledDeliveryTime
+      let actual_pickup_time = null
+      let actualDeliveryTime = null
+      let deliveryDistanceMiles = null
+      let fuelConsumedGallons = null
+
+      if (status === 'completed') {
+        // 1. Determine actual_pickup_time: 1-12 hours after creation
+        let tempPickupTime = new Date(
+          createdAt.getTime() + faker.number.int({min: 1 * 3600 * 1000, max: 12 * 3600 * 1000}),
+        )
+        if (tempPickupTime > monthRange.fullEnd) tempPickupTime = monthRange.fullEnd
+        if (tempPickupTime <= createdAt)
+          tempPickupTime = new Date(createdAt.getTime() + 3600 * 1000) // Ensure at least 1hr after creation
+        actual_pickup_time = tempPickupTime
+
+        // 2. Determine actual delivery duration (1-2 days)
+        const deliveryDurationMs = faker.number.int({min: 24 * 3600 * 1000, max: 48 * 3600 * 1000})
+        const baseActualDeliveryTime = new Date(actual_pickup_time.getTime() + deliveryDurationMs)
+
+        // 3. Set scheduled_delivery_time and final actualDeliveryTime based on on-time/late criteria
+        const isOnTime = Math.random() < 0.95 // 95% on-time rate
+        if (isOnTime) {
+          actualDeliveryTime = baseActualDeliveryTime
+          const bufferMs = faker.number.int({min: 0, max: 8 * 3600 * 1000}) // Scheduled can be 0-8 hours after actual
+          scheduledDeliveryTime = new Date(actualDeliveryTime.getTime() + bufferMs)
+        } else {
+          // 5% LATE
+          actualDeliveryTime = baseActualDeliveryTime
+          const shortfallMs = faker.number.int({min: 1 * 3600 * 1000, max: 8 * 3600 * 1000}) // Scheduled was 1-8 hours before actual
+          scheduledDeliveryTime = new Date(actualDeliveryTime.getTime() - shortfallMs)
+        }
+
+        // 4. Adjustments and Caps: Ensure chronological order and within month boundaries
+        if (scheduledDeliveryTime <= actual_pickup_time) {
+          scheduledDeliveryTime = new Date(
+            actual_pickup_time.getTime() +
+              faker.number.int({min: 1 * 3600 * 1000, max: 2 * 3600 * 1000}),
+          ) // Ensure scheduled is after pickup
+        }
+        if (actualDeliveryTime <= actual_pickup_time) {
+          actualDeliveryTime = new Date(actual_pickup_time.getTime() + deliveryDurationMs) // Recalculate if somehow pickup was too late
+        }
+
+        // Cap all times to the end of the month
+        actual_pickup_time = new Date(
+          Math.min(actual_pickup_time.getTime(), monthRange.fullEnd.getTime()),
+        )
+        scheduledDeliveryTime = new Date(
+          Math.min(scheduledDeliveryTime.getTime(), monthRange.fullEnd.getTime()),
+        )
+        actualDeliveryTime = new Date(
+          Math.min(actualDeliveryTime.getTime(), monthRange.fullEnd.getTime()),
+        )
+
+        // Ensure minimum viable time differences
+        if (actual_pickup_time <= createdAt)
+          actual_pickup_time = new Date(createdAt.getTime() + 60000) // min 1 minute after creation
+        if (scheduledDeliveryTime <= actual_pickup_time)
+          scheduledDeliveryTime = new Date(actual_pickup_time.getTime() + 60000) // min 1 minute after pickup
+        if (actualDeliveryTime <= actual_pickup_time)
+          actualDeliveryTime = new Date(actual_pickup_time.getTime() + 60000) // min 1 minute after pickup
+
+        // Specific adjustments for previous month data to not have future dates
+        if (!isCurrentMonth) {
+          const prevMonthEffectiveEnd = monthRange.end // For previous month, 'end' is the true end
+
+          if (actualDeliveryTime > prevMonthEffectiveEnd) actualDeliveryTime = prevMonthEffectiveEnd
+
+          // If actualDeliveryTime was capped, actual_pickup_time might need adjustment too
+          if (actual_pickup_time >= actualDeliveryTime) {
+            let candidatePickup = new Date(actualDeliveryTime.getTime() - deliveryDurationMs) // try to maintain duration
+            // Ensure pickup is after creation and not after the effective end of the month
+            actual_pickup_time = new Date(
+              Math.max(candidatePickup.getTime(), createdAt.getTime() + 3600 * 1000),
+            )
+            if (actual_pickup_time > prevMonthEffectiveEnd)
+              actual_pickup_time = prevMonthEffectiveEnd
+          }
+
+          if (scheduledDeliveryTime > prevMonthEffectiveEnd)
+            scheduledDeliveryTime = prevMonthEffectiveEnd
+          // Ensure scheduled time is after pickup and within month
+          if (scheduledDeliveryTime <= actual_pickup_time) {
+            scheduledDeliveryTime = new Date(actual_pickup_time.getTime() + 3600 * 1000) // min 1hr after pickup
+            if (scheduledDeliveryTime > prevMonthEffectiveEnd)
+              scheduledDeliveryTime = prevMonthEffectiveEnd
+          }
+        }
+
+        deliveryDistanceMiles = faker.number.float({min: 5, max: 200, fractionDigits: 2})
+        fuelConsumedGallons = faker.number.float({
+          min: deliveryDistanceMiles / 25, // Min 5 MPG
+          max: deliveryDistanceMiles / 5, // Max 25 MPG
+          fractionDigits: 2,
+        })
+        if (fuelConsumedGallons <= 0 && deliveryDistanceMiles > 0)
+          fuelConsumedGallons = 0.1 // Ensure positive fuel for completed trips
+        else if (deliveryDistanceMiles === 0) fuelConsumedGallons = 0
+      } else if (status === 'active') {
+        // Scheduled time: 1-3 days after creation
+        scheduledDeliveryTime = new Date(
+          createdAt.getTime() + faker.number.int({min: 24 * 3600 * 1000, max: 72 * 3600 * 1000}),
+        )
+        if (scheduledDeliveryTime > monthRange.fullEnd) scheduledDeliveryTime = monthRange.fullEnd
+        if (scheduledDeliveryTime <= createdAt)
+          scheduledDeliveryTime = new Date(createdAt.getTime() + 24 * 3600 * 1000) // Min 1 day
+
+        // 90% of active deliveries have an actual_pickup_time
+        if (Math.random() < 0.9) {
+          // Pickup time should be between createdAt and (min of scheduledDeliveryTime or month end for active)
+          const latestPossiblePickupForActive = isCurrentMonth
+            ? monthRange.end
+            : Math.min(scheduledDeliveryTime.getTime(), monthRange.end.getTime())
+          if (createdAt.getTime() < latestPossiblePickupForActive) {
+            actual_pickup_time = faker.date.between({
+              from: createdAt,
+              to: new Date(latestPossiblePickupForActive),
+            })
+          } else {
+            // If createdAt is already too close to latestPossiblePickup, add a small window
+            actual_pickup_time = new Date(
+              createdAt.getTime() + faker.number.int({min: 1 * 3600 * 1000, max: 3 * 3600 * 1000}),
+            )
+          }
+          // Cap pickup time to the effective end of the month
+          if (actual_pickup_time > monthRange.end) actual_pickup_time = monthRange.end
+          if (actual_pickup_time <= createdAt)
+            actual_pickup_time = new Date(createdAt.getTime() + 3600 * 1000) // Ensure at least 1hr after creation
+        }
+
+        // 70% of active deliveries (that have a pickup time) have some distance/fuel
+        if (actual_pickup_time && Math.random() < 0.7) {
+          deliveryDistanceMiles = faker.number.float({min: 1, max: 100, fractionDigits: 2})
+          fuelConsumedGallons = faker.number.float({
+            min: deliveryDistanceMiles / 25,
+            max: deliveryDistanceMiles / 5,
+            fractionDigits: 2,
+          })
+          if (fuelConsumedGallons <= 0 && deliveryDistanceMiles > 0) fuelConsumedGallons = 0.1
+          else if (deliveryDistanceMiles === 0) fuelConsumedGallons = 0
+        }
+      } else {
+        // 'pending' or 'cancelled'
+        // Scheduled time: 1-3 days after creation
+        scheduledDeliveryTime = new Date(
+          createdAt.getTime() + faker.number.int({min: 24 * 3600 * 1000, max: 72 * 3600 * 1000}),
+        )
+        if (scheduledDeliveryTime > monthRange.fullEnd) scheduledDeliveryTime = monthRange.fullEnd
+        if (scheduledDeliveryTime <= createdAt)
+          scheduledDeliveryTime = new Date(createdAt.getTime() + 24 * 3600 * 1000) // Min 1 day
+      }
+
+      // Fallback for scheduledDeliveryTime if somehow not set (should not happen)
+      if (!scheduledDeliveryTime) {
+        scheduledDeliveryTime = new Date(
+          createdAt.getTime() + faker.number.int({min: 24 * 3600 * 1000, max: 72 * 3600 * 1000}),
+        )
+        if (scheduledDeliveryTime > monthRange.fullEnd) scheduledDeliveryTime = monthRange.fullEnd
+        if (scheduledDeliveryTime <= createdAt)
+          scheduledDeliveryTime = new Date(createdAt.getTime() + 24 * 3600 * 1000)
+      }
+
+      deliveries.push({
+        id: deliveryIdCounter++,
+        vehicle_id: vehicle.id,
+        driver_id: driver.id,
+        status: status,
+        scheduled_delivery_time: scheduledDeliveryTime.toISOString(),
+        actual_pickup_time: actual_pickup_time ? actual_pickup_time.toISOString() : null,
+        actual_delivery_time: actualDeliveryTime ? actualDeliveryTime.toISOString() : null,
+        delivery_distance_miles: deliveryDistanceMiles,
+        fuel_consumed_gallons: fuelConsumedGallons,
+        created_at: createdAt.toISOString(),
+      })
+    }
+  }
+
+  createDeliverySet(numPrevMonthDeliveries, previousMonth, false)
+  createDeliverySet(numCurrMonthDeliveries, currentMonth, true)
+
+  return deliveries
 }
 
 // Generate vehicle-employee associations
@@ -256,6 +508,8 @@ function main() {
   const employees = generateEmployees(config.numEmployees)
   const vehicles = generateVehicles(config.numVehicles)
   const associations = generateAssociations(employees, vehicles, config)
+  const dateRanges = getMonthDateRanges()
+  const deliveries = generateDeliveries(config.numDeliveries, vehicles, employees, dateRanges)
 
   // Generate SQL
   let sql = schemaSQL + '\n'
@@ -284,6 +538,19 @@ function main() {
     'usage_notes',
     'is_primary',
     'last_inspection_date',
+  ])
+  sql += '\n'
+  sql += toSQLInsert('deliveries', deliveries, [
+    'id',
+    'vehicle_id',
+    'driver_id',
+    'status',
+    'scheduled_delivery_time',
+    'actual_pickup_time',
+    'actual_delivery_time',
+    'delivery_distance_miles',
+    'fuel_consumed_gallons',
+    'created_at',
   ])
 
   // Write to file

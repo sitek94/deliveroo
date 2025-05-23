@@ -1,49 +1,20 @@
 import {Component} from '@angular/core'
 import {CommonModule} from '@angular/common'
-import {StatCardComponent} from './components/stat-card.component'
 import {DeliveryTableComponent} from './components/delivery-table.component'
 import {FleetStatusChartComponent} from './components/fleet-status-chart.component'
+import {MetricsComponent} from './metrics.component'
+import {DashboardStore} from './dashboard-store.service'
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, StatCardComponent, DeliveryTableComponent, FleetStatusChartComponent],
+  imports: [CommonModule, MetricsComponent, DeliveryTableComponent, FleetStatusChartComponent],
+  providers: [DashboardStore],
   template: `
     <div class="container mx-auto px-4 py-8">
       <h1 class="text-2xl font-bold mb-6">Dashboard</h1>
 
-      <!-- Stats Cards -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <app-stat-card
-          title="Active Deliveries"
-          value="24"
-          change="+12%"
-          icon="local_shipping"
-          trend="up"
-        >
-        </app-stat-card>
-
-        <app-stat-card
-          title="Vehicles Online"
-          value="18"
-          change="-5%"
-          icon="directions_car"
-          trend="down"
-        >
-        </app-stat-card>
-
-        <app-stat-card title="On-Time Rate" value="94%" change="+2%" icon="schedule" trend="up">
-        </app-stat-card>
-
-        <app-stat-card
-          title="Fuel Efficiency"
-          value="28 mpg"
-          change="+5%"
-          icon="local_gas_station"
-          trend="up"
-        >
-        </app-stat-card>
-      </div>
+      <app-metrics></app-metrics>
 
       <!-- Main Content Grid -->
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
