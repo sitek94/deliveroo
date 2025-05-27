@@ -1,12 +1,13 @@
 import pool from '../database'
 
 /**
- * Calculates the on-time delivery rate for a given time period.
+ * Calculates on-time delivery percentage for completed deliveries in date range
  */
 export async function getOnTimeRate(startDate: Date, endDate: Date) {
   const result = await pool.query(
-    `
-    SELECT (SUM(CASE WHEN actual_delivery_time <= scheduled_delivery_time THEN 1 ELSE 0 END)::FLOAT * 100.0 / NULLIF(COUNT(*), 0)) AS on_time_percentage
+    /* sql */ `
+    -- Uses boolean-to-int conversion: TRUE becomes 1, FALSE becomes 0
+    SELECT AVG((actual_delivery_time <= scheduled_delivery_time)::INT) * 100.0 AS on_time_percentage
     FROM deliveries
     WHERE status = 'completed'
       AND actual_delivery_time IS NOT NULL
@@ -15,6 +16,7 @@ export async function getOnTimeRate(startDate: Date, endDate: Date) {
   `,
     [startDate.toISOString(), endDate.toISOString()],
   )
+
   // Handle cases where COUNT(*) is 0 to avoid division by zero, returning null or 0 as appropriate
   if (result.rows[0].on_time_percentage === null) {
     return 0
